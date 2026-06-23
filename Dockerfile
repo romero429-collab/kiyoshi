@@ -3,8 +3,9 @@ FROM golang:1.21-alpine AS builder
 WORKDIR /app
 
 COPY apps/cli/go.mod ./
+COPY apps/cli/go.sum ./
 
-COPY apps/cli/*.go ./
+COPY apps/cli/ ./
 
 RUN go mod tidy
 

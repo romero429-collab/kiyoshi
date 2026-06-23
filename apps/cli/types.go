@@ -9,14 +9,16 @@ var startTime = time.Now()
 
 // Task represents a decomposed task with multiple phases
 type Task struct {
-	ID         string    `json:"id"`
-	Title      string    `json:"title"`
-	Context    string    `json:"context"`
-	Difficulty int       `json:"difficulty"`
-	Status     string    `json:"status"` // planning, executing, completed, failed
-	StartTime  time.Time `json:"startTime"`
-	EndTime    time.Time `json:"endTime"`
-	Phases     []Phase   `json:"phases"`
+	ID         string      `json:"id"`
+	Title      string      `json:"title"`
+	Context    string      `json:"context"`
+	Difficulty int         `json:"difficulty"`
+	ThreadID   string      `json:"threadID,omitempty"`
+	Status     string      `json:"status"` // planning, executing, completed, failed
+	StartTime  time.Time   `json:"startTime"`
+	EndTime    time.Time   `json:"endTime"`
+	Phases     []Phase     `json:"phases"`
+	Events     []TaskEvent `json:"events,omitempty"`
 }
 
 // Phase represents a single execution phase
@@ -28,6 +30,15 @@ type Phase struct {
 	AgentID      string                 `json:"agentID"`
 	Status       string                 `json:"status"` // pending, executing, completed, failed
 	Output       map[string]interface{} `json:"output"`
+}
+
+type TaskEvent struct {
+	Type      string                 `json:"type"`
+	TaskID    string                 `json:"taskID"`
+	Status    string                 `json:"status,omitempty"`
+	Phase     *Phase                 `json:"phase,omitempty"`
+	Output    map[string]interface{} `json:"output,omitempty"`
+	Timestamp time.Time              `json:"timestamp"`
 }
 
 // Skill represents a learned skill/pattern

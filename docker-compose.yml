@@ -1,6 +1,11 @@
 version: '3.8'
 
 services:
+  deer-flow:
+    image: ${DEERFLOW_IMAGE:-ghcr.io/bytedance/deer-flow:latest}
+    ports:
+      - "8000:8000"
+
   cli:
     build: .
     ports:
@@ -8,7 +13,11 @@ services:
     environment:
       - CLI_MODE=http
       - CLI_ADDR=:8080
+      - DEERFLOW_BASE_URL=http://deer-flow:8000
+      - DEERFLOW_ASSISTANT_ID=lead_agent
     command: ./kiyoshi-cli -mode=http -addr=:8080
+    depends_on:
+      - deer-flow
 
   web:
     build:

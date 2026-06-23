@@ -1,26 +1,35 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/romero429-collab/kiyoshi/cli/pkg/deerflow"
+
 	"github.com/google/uuid"
 )
 
 type HTTPServer struct {
-	addr       string
-	running    map[string]*Task
-	mu         sync.RWMutex
-	skillStore *SkillStore
+	addr              string
+	running           map[string]*Task
+	mu                sync.RWMutex
+	skillStore        *SkillStore
+	deerflowClient    *deerflow.Client
+	deerflowAssistant string
+	deerflowTimeout   time.Duration
 }
 
 type TaskSubmitRequest struct {
-	Title           string   `json:"title"`
-	Context         string   `json:"context"`
-	Difficulty      int      `json:"difficulty"`
+	Title            string   `json:"title"`
+	Context          string   `json:"context"`
+	Difficulty       int      `json:"difficulty"`
 	ApprovalRequired bool     `json:"approvalRequired"`
 	ReferencedSkills []string `json:"referencedSkills"`
 }
@@ -43,10 +52,28 @@ type HealthResponse struct {
 }
 
 func NewHTTPServer(addr string) *HTTPServer {
+	baseURL := os.Getenv("DEERFLOW_BASE_URL")
+	if baseURL == "" {
+		baseURL = "http://localhost:8000"
+	}
+	assistantID := os.Getenv("DEERFLOW_ASSISTANT_ID")
+	if assistantID == "" {
+		assistantID = "lead_agent"
+	}
+	executionTimeout := 15 * time.Minute
+	if rawTimeout := os.Getenv("DEERFLOW_TASK_TIMEOUT"); rawTimeout != "" {
+		if parsedTimeout, err := time.ParseDuration(rawTimeout); err == nil && parsedTimeout > 0 {
+			executionTimeout = parsedTimeout
+		}
+	}
+
 	return &HTTPServer{
-		addr:       addr,
-		running:    make(map[string]*Task),
-		skillStore: &SkillStore{skills: []Skill{}},
+		addr:              addr,
+		running:           make(map[string]*Task),
+		skillStore:        &SkillStore{skills: []Skill{}},
+		deerflowClient:    deerflow.NewClient(baseURL, assistantID),
+		deerflowAssistant: assistantID,
+		deerflowTimeout:   executionTimeout,
 	}
 }
 
@@ -196,33 +223,67 @@ func (s *HTTPServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Stream events until task completes
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
+	lastIndex := 0
 
 	for {
 		select {
+		case <-r.Context().Done():
+			return
 		case <-ticker.C:
 			s.mu.RLock()
 			currentTask, stillExists := s.running[taskID]
+			var status string
+			var phases []Phase
+			var events []TaskEvent
+			var threadID string
+			if stillExists {
+				status = currentTask.Status
+				phases = append([]Phase(nil), currentTask.Phases...)
+				events = append([]TaskEvent(nil), currentTask.Events...)
+				threadID = currentTask.ThreadID
+			}
 			s.mu.RUnlock()
 
 			if !stillExists {
 				return
 			}
 
-			// Send task status
+			for ; lastIndex < len(events); lastIndex++ {
+				event := events[lastIndex]
+				payload := map[string]interface{}{
+					"type":      event.Type,
+					"taskID":    taskID,
+					"status":    status,
+					"phase":     event.Phase,
+					"output":    event.Output,
+					"phases":    phases,
+					"threadID":  threadID,
+					"timestamp": event.Timestamp,
+				}
+				if data, err := json.Marshal(payload); err == nil {
+					fmt.Fprintf(w, "data: %s\n\n", string(data))
+				}
+			}
+
+			// Keepalive status snapshot
 			event := map[string]interface{}{
 				"type":      "task.status",
 				"taskID":    taskID,
-				"status":    currentTask.Status,
+				"status":    status,
+				"phases":    phases,
+				"threadID":  threadID,
 				"timestamp": time.Now(),
 			}
-
 			if data, err := json.Marshal(event); err == nil {
 				fmt.Fprintf(w, "data: %s\n\n", string(data))
 			}
 
-			if currentTask.Status == "completed" || currentTask.Status == "failed" {
+			if status == "completed" || status == "failed" {
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
 				return
 			}
 
@@ -241,58 +302,196 @@ func (s *HTTPServer) executeTask(task *Task) {
 		}
 	}()
 
+	s.mu.Lock()
 	task.Status = "executing"
+	task.Events = append(task.Events, TaskEvent{
+		Type:      "task.started",
+		TaskID:    task.ID,
+		Status:    task.Status,
+		Timestamp: time.Now(),
+	})
+	s.mu.Unlock()
 
-	// Simulate task decomposition
-	phases := s.decomposeTask(task)
-	task.Phases = phases
+	ctx, cancel := context.WithTimeout(context.Background(), s.deerflowTimeout)
+	defer cancel()
 
-	// Execute phases
-	for i, phase := range phases {
-		log.Printf("[Task %s] Executing phase %d: %s", task.ID, i+1, phase.Title)
-
-		time.Sleep(2 * time.Second)
-		phase.Status = "completed"
-		phase.Output = map[string]interface{}{"result": "success"}
+	memory, err := s.deerflowClient.GetMemory(ctx)
+	if err == nil {
+		s.mu.Lock()
+		task.Events = append(task.Events, TaskEvent{
+			Type:      "memory.loaded",
+			TaskID:    task.ID,
+			Status:    task.Status,
+			Output:    memory,
+			Timestamp: time.Now(),
+		})
+		s.mu.Unlock()
 	}
 
-	task.Status = "completed"
+	mergedContext := task.Context
+	if len(memory) > 0 {
+		if rawMemory, marshalErr := json.Marshal(memory); marshalErr == nil {
+			memoryContext := string(rawMemory)
+			if len(memoryContext) > 2000 {
+				memoryContext = memoryContext[:2000] + "...(truncated)"
+			}
+			mergedContext = fmt.Sprintf("memory_context: %s\n\nuser_task_context: %s", memoryContext, task.Context)
+		}
+	}
+
+	threadID, err := s.deerflowClient.SubmitTask(ctx, task.Title, mergedContext, map[string]interface{}{
+		"kiyoshi_task_id": task.ID,
+		"difficulty":      task.Difficulty,
+		"assistant_id":    s.deerflowAssistant,
+	})
+	if err != nil {
+		s.mu.Lock()
+		task.Status = "failed"
+		task.EndTime = time.Now()
+		task.Events = append(task.Events, TaskEvent{
+			Type:      "task.failed",
+			TaskID:    task.ID,
+			Status:    task.Status,
+			Output:    map[string]interface{}{"error": err.Error()},
+			Timestamp: time.Now(),
+		})
+		s.mu.Unlock()
+		log.Printf("[Task %s] Deer-flow submit failed: %v", task.ID, err)
+		return
+	}
+
+	s.mu.Lock()
+	task.ThreadID = threadID
+	task.Events = append(task.Events, TaskEvent{
+		Type:   "task.routed",
+		TaskID: task.ID,
+		Status: task.Status,
+		Output: map[string]interface{}{
+			"threadID": threadID,
+		},
+		Timestamp: time.Now(),
+	})
+	s.mu.Unlock()
+
+	stream, err := s.deerflowClient.StreamEvents(ctx, threadID)
+	if err != nil {
+		s.mu.Lock()
+		task.Status = "failed"
+		task.EndTime = time.Now()
+		task.Events = append(task.Events, TaskEvent{
+			Type:      "task.failed",
+			TaskID:    task.ID,
+			Status:    task.Status,
+			Output:    map[string]interface{}{"error": err.Error()},
+			Timestamp: time.Now(),
+		})
+		s.mu.Unlock()
+		log.Printf("[Task %s] Deer-flow stream failed: %v", task.ID, err)
+		return
+	}
+
+	for event := range stream {
+		s.mu.Lock()
+		task.Phases = s.decomposeTask(task, event)
+		eventStatus := strings.ToLower(firstValue(event.Data, "status", "state"))
+		if eventStatus == "failed" {
+			task.Status = "failed"
+		} else if eventStatus == "completed" || eventStatus == "success" || eventStatus == "done" {
+			task.Status = "completed"
+		}
+
+		var phaseRef *Phase
+		if len(task.Phases) > 0 {
+			phaseCopy := task.Phases[len(task.Phases)-1]
+			phaseRef = &phaseCopy
+		}
+
+		task.Events = append(task.Events, TaskEvent{
+			Type:      fmt.Sprintf("deerflow.%s", normalizeType(event.Type)),
+			TaskID:    task.ID,
+			Status:    task.Status,
+			Phase:     phaseRef,
+			Output:    event.Data,
+			Timestamp: event.Timestamp,
+		})
+		s.mu.Unlock()
+	}
+
+	threadStatus, statusErr := s.deerflowClient.GetThreadStatus(ctx, threadID)
+
+	s.mu.Lock()
+	if statusErr == nil {
+		switch strings.ToLower(threadStatus.Status) {
+		case "failed", "error":
+			task.Status = "failed"
+		case "completed", "success", "done":
+			task.Status = "completed"
+		default:
+			if task.Status != "failed" {
+				task.Status = "completed"
+			}
+		}
+	} else if task.Status != "failed" {
+		task.Status = "completed"
+	}
 	task.EndTime = time.Now()
+	finalType := "task.completed"
+	if task.Status == "failed" {
+		finalType = "task.failed"
+	}
+	task.Events = append(task.Events, TaskEvent{
+		Type:      finalType,
+		TaskID:    task.ID,
+		Status:    task.Status,
+		Timestamp: time.Now(),
+	})
+	s.mu.Unlock()
 
 	// Extract skills
 	s.compactSkills(task)
 
-	log.Printf("[Task %s] Completed successfully", task.ID)
+	log.Printf("[Task %s] Finished with status: %s", task.ID, task.Status)
 }
 
-func (s *HTTPServer) decomposeTask(task *Task) []Phase {
-	phases := []Phase{
-		{
-			ID:           "phase-" + uuid.New().String(),
-			Title:        "Analyze Requirements",
-			Type:         "analysis",
-			Dependencies: []string{},
-			AgentID:      "agent-" + uuid.New().String(),
-			Status:       "pending",
-		},
-		{
-			ID:           "phase-" + uuid.New().String(),
-			Title:        "Generate Solution",
-			Type:         "generation",
-			Dependencies: []string{},
-			AgentID:      "agent-" + uuid.New().String(),
-			Status:       "pending",
-		},
-		{
-			ID:           "phase-" + uuid.New().String(),
-			Title:        "Validate & Log",
-			Type:         "logging",
-			Dependencies: []string{},
-			AgentID:      "agent-" + uuid.New().String(),
-			Status:       "pending",
-		},
+func (s *HTTPServer) decomposeTask(task *Task, event deerflow.Event) []Phase {
+	phaseTitle := firstValue(event.Data, "phase_title", "phase", "step", "node", "tool_name")
+	if phaseTitle == "" {
+		phaseTitle = normalizeType(event.Type)
 	}
-	return phases
+
+	phaseType := firstValue(event.Data, "phase_type", "type", "event")
+	if phaseType == "" {
+		phaseType = normalizeType(event.Type)
+	}
+
+	phaseStatus := strings.ToLower(firstValue(event.Data, "phase_status", "status", "state"))
+	if phaseStatus == "" {
+		phaseStatus = "executing"
+	}
+	if phaseStatus == "success" || phaseStatus == "done" {
+		phaseStatus = "completed"
+	}
+
+	for i := range task.Phases {
+		if task.Phases[i].Title == phaseTitle && task.Phases[i].Type == phaseType {
+			task.Phases[i].Status = phaseStatus
+			if len(event.Data) > 0 {
+				task.Phases[i].Output = event.Data
+			}
+			return task.Phases
+		}
+	}
+
+	task.Phases = append(task.Phases, Phase{
+		ID:           "phase-" + uuid.New().String(),
+		Title:        phaseTitle,
+		Type:         phaseType,
+		Dependencies: []string{},
+		AgentID:      firstValue(event.Data, "agent_id", "agent"),
+		Status:       phaseStatus,
+		Output:       event.Data,
+	})
+	return task.Phases
 }
 
 func (s *HTTPServer) compactSkills(task *Task) {
@@ -315,4 +514,23 @@ func (s *HTTPServer) compactSkills(task *Task) {
 	s.skillStore.mu.Unlock()
 
 	log.Printf("[Skills] Compacted 1 skill from task %s", task.ID)
+}
+
+func firstValue(m map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if val, ok := m[key]; ok {
+			if s, ok := val.(string); ok && s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+func normalizeType(value string) string {
+	if value == "" {
+		return "update"
+	}
+	normalized := strings.ReplaceAll(strings.ToLower(value), " ", "_")
+	return strings.ReplaceAll(normalized, ".", "_")
 }
