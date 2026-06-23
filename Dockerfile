@@ -2,9 +2,11 @@ FROM golang:1.21-alpine AS builder
 
 WORKDIR /app
 
-COPY apps/cli/go.mod apps/cli/go.sum ./
+COPY apps/cli/go.mod ./
 
 COPY apps/cli/*.go ./
+
+RUN go mod tidy
 
 RUN go build -o kiyoshi-cli .
 
