@@ -19,6 +19,29 @@ export interface SkillsResponse {
   total: number;
 }
 
+export interface TaskEvent {
+  type: string;
+  taskID: string;
+  status?: string;
+  threadID?: string;
+  phase?: {
+    id: string;
+    title: string;
+    type: string;
+    status: string;
+    output?: Record<string, unknown>;
+  };
+  phases?: Array<{
+    id: string;
+    title: string;
+    type: string;
+    status: string;
+    output?: Record<string, unknown>;
+  }>;
+  output?: Record<string, unknown>;
+  timestamp?: string;
+}
+
 export const apiClient = {
   // Submit a new task
   submitTask: async (params: TaskSubmitParams): Promise<TaskResponse> => {
@@ -56,12 +79,15 @@ export const apiClient = {
   },
 
   // Stream task events
-  streamTaskEvents: (taskID: string, onEvent: (event: any) => void) => {
+  streamTaskEvents: (taskID: string, onEvent: (event: TaskEvent) => void) => {
     const eventSource = new EventSource(`${API_URL}/api/events?taskID=${taskID}`);
 
     eventSource.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data);
+        const data = JSON.parse(event.data) as TaskEvent;
+        if (!data.type && (data as any).event) {
+          data.type = (data as any).event;
+        }
         onEvent(data);
       } catch (error) {
         console.error('[API] Failed to parse event:', error);

@@ -12,6 +12,7 @@ const ChatScreen = () => {
   const [taskStatus, setTaskStatus] = useState('idle');
   const [connected, setConnected] = useState(false);
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
+  const [phaseLabel, setPhaseLabel] = useState('');
 
   // Check API connection on mount
   useEffect(() => {
@@ -32,10 +33,35 @@ const ChatScreen = () => {
       console.log('[Chat] Event:', event);
       setTaskStatus(event.status || 'executing');
 
+      if (event.phase?.title) {
+        setPhaseLabel(`${event.phase.title} (${event.phase.status})`);
+      } else if (event.phases && event.phases.length > 0) {
+        const currentPhase = event.phases[event.phases.length - 1];
+        setPhaseLabel(`${currentPhase.title} (${currentPhase.status})`);
+      }
+
+      if (event.type.startsWith('deerflow.') && event.phase?.title) {
+        addMessage({
+          id: `${Date.now()}-${event.phase.id}`,
+          role: 'assistant',
+          content: `• ${event.phase.title}: ${event.phase.status}`,
+          timestamp: new Date(),
+        });
+      }
+
       if (event.status === 'completed' || event.status === 'failed') {
         setLoading(false);
         setTaskStatus('idle');
+        setPhaseLabel('');
         setCurrentTaskId(null);
+        if (event.status === 'completed') {
+          addMessage({
+            id: Date.now().toString(),
+            role: 'assistant',
+            content: '✅ Deer-flow execution completed.',
+            timestamp: new Date(),
+          });
+        }
       }
     });
 
@@ -108,7 +134,10 @@ const ChatScreen = () => {
           <View style={[styles.statusDot, connected ? styles.statusDotGreen : styles.statusDotRed]} />
           <Text style={styles.statusText}>{connected ? 'Connected' : 'Offline'}</Text>
         </View>
-        <Text style={styles.status}>{taskStatus}</Text>
+        <View>
+          <Text style={styles.status}>{taskStatus}</Text>
+          {!!phaseLabel && <Text style={styles.phaseStatus}>{phaseLabel}</Text>}
+        </View>
       </View>
 
       <ScrollView style={styles.messagesContainer}>
@@ -196,6 +225,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#888',
     textTransform: 'capitalize',
+  },
+  phaseStatus: {
+    fontSize: 10,
+    color: '#666',
+    textAlign: 'right',
+    maxWidth: 180,
   },
   messagesContainer: {
     flex: 1,
