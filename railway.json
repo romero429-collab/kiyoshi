@@ -1,0 +1,8 @@
+{
+  "buildCommand": "npm run build",
+  "startCommand": "npm run dev",
+  "deployCommand": "npm install && npm run build",
+  "enviroment": {
+    "API_URL": "${{ env.RAILWAY_PUBLIC_DOMAIN }}"
+  }
+}

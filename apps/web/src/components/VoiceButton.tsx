@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import { TouchableOpacity, Text, StyleSheet, Alert } from 'react-native';
-import * as Speech from 'expo-speech';
 
 interface VoiceButtonProps {
   onTranscript: (text: string) => void;
+  disabled?: boolean;
 }
 
-const VoiceButton: React.FC<VoiceButtonProps> = ({ onTranscript }) => {
+const VoiceButton: React.FC<VoiceButtonProps> = ({ onTranscript, disabled = false }) => {
   const [listening, setListening] = useState(false);
 
   const startListening = async () => {
@@ -47,13 +47,13 @@ const VoiceButton: React.FC<VoiceButtonProps> = ({ onTranscript }) => {
 
   const stopListening = async () => {
     setListening(false);
-    // Stop listening
   };
 
   return (
     <TouchableOpacity
-      style={[styles.button, listening && styles.buttonActive]}
+      style={[styles.button, listening && styles.buttonActive, disabled && styles.buttonDisabled]}
       onPress={listening ? stopListening : startListening}
+      disabled={disabled}
     >
       <Text style={styles.buttonText}>{listening ? '🎤' : '🎙️'}</Text>
     </TouchableOpacity>
@@ -74,6 +74,9 @@ const styles = StyleSheet.create({
   buttonActive: {
     backgroundColor: '#10a37f',
     borderColor: '#10a37f',
+  },
+  buttonDisabled: {
+    opacity: 0.5,
   },
   buttonText: {
     fontSize: 20,
