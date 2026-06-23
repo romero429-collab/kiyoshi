@@ -186,7 +186,7 @@ func (s *HTTPServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	// Check if task exists
 	s.mu.RLock()
-	task, exists := s.running[taskID]
+	_, exists := s.running[taskID]
 	s.mu.RUnlock()
 
 	if !exists {
