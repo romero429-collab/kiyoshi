@@ -3,11 +3,10 @@ FROM golang:1.21-alpine AS builder
 WORKDIR /app
 
 COPY apps/cli/go.mod apps/cli/go.sum ./
-RUN go mod download
 
 COPY apps/cli/*.go ./
 
-RUN CGO_ENABLED=0 GOOS=linux go build -o kiyoshi-cli .
+RUN go build -o kiyoshi-cli .
 
 FROM alpine:latest
 
