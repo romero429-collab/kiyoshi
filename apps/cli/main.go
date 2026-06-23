@@ -6,6 +6,18 @@ import (
 	"os"
 )
 
+type StdioServer struct {
+	// Placeholder for stdio mode server
+}
+
+func NewServer() *StdioServer {
+	return &StdioServer{}
+}
+
+func (s *StdioServer) Start() {
+	log.Println("[Stdio Server] Stdio mode not implemented yet")
+}
+
 func main() {
 	var mode string
 	var addr string
