@@ -23,6 +23,7 @@ type HTTPServer struct {
 	skillStore        *SkillStore
 	deerflowClient    *deerflow.Client
 	deerflowAssistant string
+	deerflowTimeout   time.Duration
 }
 
 type TaskSubmitRequest struct {
@@ -59,6 +60,12 @@ func NewHTTPServer(addr string) *HTTPServer {
 	if assistantID == "" {
 		assistantID = "lead_agent"
 	}
+	executionTimeout := 15 * time.Minute
+	if rawTimeout := os.Getenv("DEERFLOW_TASK_TIMEOUT"); rawTimeout != "" {
+		if parsedTimeout, err := time.ParseDuration(rawTimeout); err == nil && parsedTimeout > 0 {
+			executionTimeout = parsedTimeout
+		}
+	}
 
 	return &HTTPServer{
 		addr:              addr,
@@ -66,6 +73,7 @@ func NewHTTPServer(addr string) *HTTPServer {
 		skillStore:        &SkillStore{skills: []Skill{}},
 		deerflowClient:    deerflow.NewClient(baseURL, assistantID),
 		deerflowAssistant: assistantID,
+		deerflowTimeout:   executionTimeout,
 	}
 }
 
@@ -304,7 +312,7 @@ func (s *HTTPServer) executeTask(task *Task) {
 	})
 	s.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), s.deerflowTimeout)
 	defer cancel()
 
 	memory, err := s.deerflowClient.GetMemory(ctx)
@@ -323,7 +331,11 @@ func (s *HTTPServer) executeTask(task *Task) {
 	mergedContext := task.Context
 	if len(memory) > 0 {
 		if rawMemory, marshalErr := json.Marshal(memory); marshalErr == nil {
-			mergedContext = fmt.Sprintf("memory_context: %s\n\nuser_task_context: %s", string(rawMemory), task.Context)
+			memoryContext := string(rawMemory)
+			if len(memoryContext) > 2000 {
+				memoryContext = memoryContext[:2000] + "...(truncated)"
+			}
+			mergedContext = fmt.Sprintf("memory_context: %s\n\nuser_task_context: %s", memoryContext, task.Context)
 		}
 	}
 
@@ -381,10 +393,10 @@ func (s *HTTPServer) executeTask(task *Task) {
 	for event := range stream {
 		s.mu.Lock()
 		task.Phases = s.decomposeTask(task, event)
-		status := strings.ToLower(firstValue(event.Data, "status", "state"))
-		if status == "failed" {
+		eventStatus := strings.ToLower(firstValue(event.Data, "status", "state"))
+		if eventStatus == "failed" {
 			task.Status = "failed"
-		} else if status == "completed" || status == "success" || status == "done" {
+		} else if eventStatus == "completed" || eventStatus == "success" || eventStatus == "done" {
 			task.Status = "completed"
 		}
 
@@ -442,7 +454,7 @@ func (s *HTTPServer) executeTask(task *Task) {
 }
 
 func (s *HTTPServer) decomposeTask(task *Task, event deerflow.Event) []Phase {
-	phaseTitle := firstValue(event.Data, "phase_title", "phase", "step", "node", "tool_name", "agent")
+	phaseTitle := firstValue(event.Data, "phase_title", "phase", "step", "node", "tool_name")
 	if phaseTitle == "" {
 		phaseTitle = normalizeType(event.Type)
 	}
@@ -461,7 +473,7 @@ func (s *HTTPServer) decomposeTask(task *Task, event deerflow.Event) []Phase {
 	}
 
 	for i := range task.Phases {
-		if strings.EqualFold(task.Phases[i].Title, phaseTitle) {
+		if task.Phases[i].Title == phaseTitle && task.Phases[i].Type == phaseType {
 			task.Phases[i].Status = phaseStatus
 			if len(event.Data) > 0 {
 				task.Phases[i].Output = event.Data

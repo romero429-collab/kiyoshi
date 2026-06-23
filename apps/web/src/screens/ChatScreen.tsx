@@ -37,10 +37,12 @@ const ChatScreen = () => {
         setPhaseLabel(`${event.phase.title} (${event.phase.status})`);
       } else if (event.phases && event.phases.length > 0) {
         const currentPhase = event.phases[event.phases.length - 1];
-        setPhaseLabel(`${currentPhase.title} (${currentPhase.status})`);
+        if (currentPhase) {
+          setPhaseLabel(`${currentPhase.title} (${currentPhase.status})`);
+        }
       }
 
-      if (event.type.startsWith('deerflow.') && event.phase?.title) {
+      if (event.type?.startsWith('deerflow.') && event.phase?.title) {
         addMessage({
           id: `${Date.now()}-${event.phase.id}`,
           role: 'assistant',

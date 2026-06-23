@@ -84,11 +84,12 @@ export const apiClient = {
 
     eventSource.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data) as TaskEvent;
-        if (!data.type && (data as any).event) {
-          data.type = (data as any).event;
-        }
-        onEvent(data);
+        const data = JSON.parse(event.data) as TaskEvent & { event?: string };
+        const normalizedEvent: TaskEvent = {
+          ...data,
+          type: data.type || data.event || 'task.status',
+        };
+        onEvent(normalizedEvent);
       } catch (error) {
         console.error('[API] Failed to parse event:', error);
       }

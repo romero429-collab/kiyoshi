@@ -40,9 +40,7 @@ func NewClient(baseURL, assistantID string) *Client {
 	return &Client{
 		baseURL:     strings.TrimRight(baseURL, "/"),
 		assistantID: assistantID,
-		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
-		},
+		httpClient:  &http.Client{},
 		runByThread: make(map[string]string),
 	}
 }
@@ -119,16 +117,17 @@ func (c *Client) StreamEvents(ctx context.Context, threadID string) (<-chan Even
 		var currentType string
 		var dataLines []string
 
-		emit := func() {
+		emit := func() bool {
 			if len(dataLines) == 0 {
-				return
+				return false
 			}
 			payload := strings.Join(dataLines, "\n")
 			dataLines = dataLines[:0]
 
+			// LangGraph stream convention uses [DONE] sentinel to terminate SSE streams.
 			if payload == "[DONE]" {
 				events <- Event{Type: "run.completed", Timestamp: time.Now(), Data: map[string]interface{}{}}
-				return
+				return true
 			}
 
 			decoded := map[string]interface{}{}
@@ -149,6 +148,7 @@ func (c *Client) StreamEvents(ctx context.Context, threadID string) (<-chan Even
 				Timestamp: time.Now(),
 			}
 			currentType = ""
+			return false
 		}
 
 		for scanner.Scan() {
@@ -159,7 +159,9 @@ func (c *Client) StreamEvents(ctx context.Context, threadID string) (<-chan Even
 			}
 			line := scanner.Text()
 			if line == "" {
-				emit()
+				if emit() {
+					return
+				}
 				continue
 			}
 			if strings.HasPrefix(line, "event:") {
