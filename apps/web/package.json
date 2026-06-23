@@ -1,0 +1,32 @@
+{
+  "name": "kiyoshi-web",
+  "version": "0.1.0",
+  "description": "Kiyoshi web app (React Native + Expo)",
+  "private": true,
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "dev": "expo start --web",
+    "build": "expo export --platform web",
+    "start": "expo start",
+    "test": "jest",
+    "lint": "eslint src/",
+    "format": "prettier --write src/"
+  },
+  "dependencies": {
+    "expo": "^49.0.0",
+    "react": "^18.2.0",
+    "react-native": "^0.72.0",
+    "react-native-web": "^0.18.0",
+    "zustand": "^4.3.0",
+    "react-native-gesture-handler": "^2.12.0",
+    "expo-speech": "^11.4.0",
+    "axios": "^1.4.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.0.0",
+    "@types/react-native": "^0.71.0",
+    "typescript": "^5.0.0",
+    "eslint": "^8.0.0",
+    "prettier": "^3.0.0"
+  }
+}
